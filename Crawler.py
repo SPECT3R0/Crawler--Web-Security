@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import random
 import time
 import webbrowser
 import json
@@ -29,14 +30,19 @@ async def monitor_with_puppeteer(url: str, browser):
     previous_js = ""
     previous_network = ""
 
+    # Create a subfolder for the website
+    website_dir = os.path.join(screenshots_dir, url.replace("https://", "").replace("http://", "").replace("/", "_"))
+    os.makedirs(website_dir, exist_ok=True)
+
     try:
         page = await browser.newPage()
+        await page.setViewport({"width": 1920, "height": 1080})
         while time.time() - start_time < MONITOR_DURATION:
             try:
                 await page.goto(url)
 
-                # Simulate random clicks or actions
-                await simulate_random_actions(page)
+                # Simulate targeted clicks on specific elements
+                await simulate_targeted_clicks(page)
 
                 # Wait for page to settle after actions
                 await asyncio.sleep(SLEEP_DURATION)
@@ -55,8 +61,8 @@ async def monitor_with_puppeteer(url: str, browser):
                     }
                     changes.append(change_entry)
 
-                    screenshot_path = os.path.join(screenshots_dir, f'{url.replace("https://", "").replace("/", "_")}_{screenshot_count}.png')
-                    await page.screenshot({'path': screenshot_path})
+                    screenshot_path = os.path.join(website_dir, f'{screenshot_count}.png')
+                    await page.screenshot({'path': screenshot_path, 'fullPage': True})
                     screenshot_count += 1
 
                     previous_html = current_html
@@ -77,13 +83,15 @@ async def monitor_with_puppeteer(url: str, browser):
 
     return {url: changes}
 
-async def simulate_random_actions(page):
-    # Example: Clicking a random element on the page
+async def simulate_targeted_clicks(page):
     try:
-        await page.click('button')  # Replace with your specific selector
-        await asyncio.sleep(2)  # Wait a bit after click
+        elements = await page.querySelectorAll('input, a, button, img')
+        if elements:
+            element = random.choice(elements)
+            await element.click()
+            await asyncio.sleep(2)  # Wait a bit after click
     except Exception as e:
-        error_logger.error(f"Error simulating actions: {e}")
+        error_logger.error(f"Error simulating clicks: {e}")
 
 async def monitor_websites_from_file(file_path: str, log_file_path: str):
     browser = None
