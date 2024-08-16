@@ -40,7 +40,7 @@ pip install -r requirements.txt
 2. **Run the script**:
 
 ```bash
-python your_script.py
+python Crawler.py
 ```
 
 3. **Review the results** in the `changes.json` file and the screenshot directories.
