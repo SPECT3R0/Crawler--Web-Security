@@ -1,16 +1,15 @@
-# Junaid Arshad Malik
-# Web Security - Ad Blocker Crawler
 import asyncio
 import logging
 import os
 import json
-from datetime import datetime
 import random
+import re
+from datetime import datetime
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-
+import aiofiles
 
 print("Hello!")
-print("Welcome to  Web Crawler!")
+print("Welcome to Web Crawler!")
 print("By: tkFlash!")
 
 # Configure logging
@@ -31,13 +30,20 @@ os.makedirs(BASE_SCREENSHOTS_DIR, exist_ok=True)
 CHANGES_JSON_FILE = 'changes.json'
 changes_data = []
 
+# Semaphore to limit the number of concurrent tasks
+semaphore = asyncio.Semaphore(2)  # Adjust as needed
+
+def sanitize_filename(filename):
+    """Sanitizes a string to be a valid filename by removing or replacing invalid characters."""
+    return re.sub(r'[<>:"/\\|?*\x00-\x1F]', '_', filename)
+
 async def take_screenshot(page, screenshot_path: str):
     """Takes a screenshot of the current page with a longer timeout."""
     try:
-        await page.screenshot(path=screenshot_path, full_page=True, timeout=60000)  # Increased timeout to 60 seconds
+        await page.screenshot(path=screenshot_path, full_page=True, timeout=60000)
         logging.info(f"Screenshot saved: {screenshot_path}")
     except PlaywrightTimeoutError:
-        error_logger.error(f"Failed to take screenshot: Timeout exceeded while waiting for fonts or other resources to load.")
+        error_logger.error("Failed to take screenshot: Timeout exceeded while waiting for fonts or other resources to load.")
     except Exception as e:
         error_logger.error(f"Failed to take screenshot: {e}")
 
@@ -59,7 +65,7 @@ async def monitor_changes(page, click_description):
             "js_snippet": js_content[:200],
             "css_snippet": css_content[:200]
         }
-        logging.info(f"Changes detected and logged.")
+        logging.info("Changes detected and logged.")
     except Exception as e:
         error_logger.error(f"Error while monitoring changes: {e}")
     
@@ -69,7 +75,7 @@ async def handle_redirection_or_new_tab(page, element_text, screenshots_dir):
     """Handles possible redirection or new tabs after a click."""
     initial_url = page.url
     try:
-        await page.wait_for_timeout(5000)  # Wait for any potential redirection
+        await page.wait_for_timeout(5000)
 
         pages = [page]
         for context_page in page.context.pages:
@@ -136,14 +142,14 @@ async def simulate_clicks(page, screenshots_dir):
     except Exception as e:
         error_logger.error(f"Error during click simulation: {e}")
 
-async def monitor_website(url):
+async def monitor_website(browser, url: str):
     """Monitors a single website by navigating to it and simulating clicks."""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, slow_mo=50, timeout=30000)
+    async with semaphore:
         page = await browser.new_page()
 
-        # Create a unique directory for this website's screenshots
-        screenshots_dir = os.path.join(BASE_SCREENSHOTS_DIR, url.replace('http://', '').replace('https://', '').replace('/', '_'))
+        # Sanitize the URL to create a valid directory name
+        sanitized_url = sanitize_filename(url)
+        screenshots_dir = os.path.join(BASE_SCREENSHOTS_DIR, sanitized_url)
         os.makedirs(screenshots_dir, exist_ok=True)
 
         try:
@@ -156,22 +162,29 @@ async def monitor_website(url):
         except Exception as e:
             error_logger.error(f"Error during website monitoring: {e}")
         finally:
-            await browser.close()
+            await page.close()
 
 async def main():
     """Main function to handle multiple website monitoring concurrently."""
-    with open('websites.txt', 'r') as file:
-        websites = [line.strip() for line in file.readlines()]
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, slow_mo=50, timeout=30000)
 
-    tasks = [monitor_website(website) for website in websites]
+        with open('websites.txt', 'r') as file:
+            websites = [line.strip() for line in file.readlines()]
 
-    # Run all tasks concurrently
-    await asyncio.gather(*tasks)
+        # Processing websites in batches
+        batch_size = 2  # Adjust as needed
+        for i in range(0, len(websites), batch_size):
+            batch = websites[i:i + batch_size]
+            tasks = [monitor_website(browser, website) for website in batch]
+            await asyncio.gather(*tasks)
+
+        await browser.close()
 
     # Write all collected changes to the JSON file
     logging.info(f"Writing all changes to {CHANGES_JSON_FILE}")
-    with open(CHANGES_JSON_FILE, 'w') as f:
-        json.dump(changes_data, f, indent=4)
+    async with aiofiles.open(CHANGES_JSON_FILE, 'w') as f:
+        await f.write(json.dumps(changes_data, indent=4))
     logging.info(f"All changes have been logged in {CHANGES_JSON_FILE}")
 
 if __name__ == "__main__":
