@@ -26,12 +26,8 @@ error_logger = logging.getLogger('error_logger')
 BASE_SCREENSHOTS_DIR = 'screenshots'
 os.makedirs(BASE_SCREENSHOTS_DIR, exist_ok=True)
 
-# JSON file for storing all changes
-CHANGES_JSON_FILE = 'changes.json'
-changes_data = []
-
 # Semaphore to limit the number of concurrent tasks
-semaphore = asyncio.Semaphore(2)  # Adjust as needed
+semaphore = asyncio.Semaphore(5)  # Adjust as needed
 
 def sanitize_filename(filename):
     """Sanitizes a string to be a valid filename by removing or replacing invalid characters."""
@@ -71,31 +67,7 @@ async def monitor_changes(page, click_description):
     
     return changes
 
-async def capture_initial_state(page):
-    """Captures and logs the initial state of the webpage."""
-    initial_state = {}
-    try:
-        html_content = await page.content()
-        js_content = await page.evaluate('Array.from(document.scripts).map(s => s.outerHTML).join("\\n")')
-        css_content = await page.evaluate('Array.from(document.styleSheets).map(s => s.ownerNode.outerHTML).join("\\n")')
-        current_url = page.url
-
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        initial_state = {
-            "timestamp": now,
-            "initial_load": True,
-            "url": current_url,
-            "html_snippet": html_content[:200],
-            "js_snippet": js_content[:200],
-            "css_snippet": css_content[:200]
-        }
-        logging.info("Initial state captured and logged.")
-    except Exception as e:
-        error_logger.error(f"Error while capturing initial state: {e}")
-    
-    return initial_state
-
-async def handle_redirection_or_new_tab(page, element_text, screenshots_dir):
+async def handle_redirection_or_new_tab(page, element_text, screenshots_dir, changes_list):
     """Handles possible redirection or new tabs after a click."""
     initial_url = page.url
     try:
@@ -112,7 +84,7 @@ async def handle_redirection_or_new_tab(page, element_text, screenshots_dir):
                     logging.info(f"New tab detected: {p.url}")
                     await p.wait_for_load_state()
                     redirected_changes = await monitor_changes(p, f"New tab after click: {element_text}")
-                    changes_data.append(redirected_changes)
+                    changes_list.append(redirected_changes)
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     redirected_screenshot_path = f"{screenshots_dir}/{timestamp}_new_tab_screenshot.png"
                     await take_screenshot(p, redirected_screenshot_path)
@@ -120,7 +92,7 @@ async def handle_redirection_or_new_tab(page, element_text, screenshots_dir):
                 else:
                     logging.info(f"Redirection detected: {p.url}")
                     redirected_changes = await monitor_changes(p, f"Redirection after click: {element_text}")
-                    changes_data.append(redirected_changes)
+                    changes_list.append(redirected_changes)
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     redirected_screenshot_path = f"{screenshots_dir}/{timestamp}_redirected_screenshot.png"
                     await take_screenshot(p, redirected_screenshot_path)
@@ -131,7 +103,7 @@ async def handle_redirection_or_new_tab(page, element_text, screenshots_dir):
     except Exception as e:
         error_logger.error(f"Error handling redirection or new tab: {e}")
 
-async def simulate_clicks(page, screenshots_dir):
+async def simulate_clicks(page, screenshots_dir, changes_list):
     """Simulates random clicks on a webpage and monitors for changes."""
     num_clicks = random.randint(5, 10)
     logging.info(f"Will perform {num_clicks} clicks on this webpage.")
@@ -151,11 +123,11 @@ async def simulate_clicks(page, screenshots_dir):
                 logging.info(f"Clicking on element: {element_text}")
                 await element.click()
 
-                await handle_redirection_or_new_tab(page, element_text, screenshots_dir)
+                await handle_redirection_or_new_tab(page, element_text, screenshots_dir, changes_list)
 
                 click_description = f"Clicked on element: {element_text}"
                 changes = await monitor_changes(page, click_description)
-                changes_data.append(changes)
+                changes_list.append(changes)
 
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 screenshot_path = f"{screenshots_dir}/{timestamp}_click_{i+1}.png"
@@ -176,21 +148,36 @@ async def monitor_website(browser, url: str):
         screenshots_dir = os.path.join(BASE_SCREENSHOTS_DIR, sanitized_url)
         os.makedirs(screenshots_dir, exist_ok=True)
 
+        changes_list = []  # Store changes for this URL
+
         try:
             logging.info(f"Navigating to {url}...")
             await page.goto(url, timeout=30000)
             logging.info(f"Successfully navigated to {url}")
 
-            # Capture and log the initial state
-            initial_state = await capture_initial_state(page)
-            changes_data.append(initial_state)
+            # Capture initial state
+            initial_state = {
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "initial_url": url,
+                "initial_html": await page.content(),
+                "initial_js": await page.evaluate('Array.from(document.scripts).map(s => s.outerHTML).join("\\n")'),
+                "initial_css": await page.evaluate('Array.from(document.styleSheets).map(s => s.ownerNode.outerHTML).join("\\n")')
+            }
+            changes_list.append(initial_state)  # Save initial state
 
-            await simulate_clicks(page, screenshots_dir)
+            await simulate_clicks(page, screenshots_dir, changes_list)
 
         except Exception as e:
             error_logger.error(f"Error during website monitoring: {e}")
         finally:
             await page.close()
+
+            # Save the changes to a JSON file specific to this URL
+            changes_json_path = os.path.join(screenshots_dir, 'changes.json')
+            logging.info(f"Writing changes for {url} to {changes_json_path}")
+            async with aiofiles.open(changes_json_path, 'w') as f:
+                await f.write(json.dumps(changes_list, indent=4))
+            logging.info(f"Changes for {url} have been logged.")
 
 async def main():
     """Main function to handle multiple website monitoring concurrently."""
@@ -201,17 +188,11 @@ async def main():
             websites = [line.strip() for line in file.readlines()]
 
         # Processing websites in batches
-        batch_size = 2  # Adjust as needed
+        batch_size = 10  # Adjust as needed
         for i in range(0, len(websites), batch_size):
             batch = websites[i:i + batch_size]
             tasks = [monitor_website(browser, website) for website in batch]
             await asyncio.gather(*tasks)
-
-            # After each batch, write the collected changes to the JSON file
-            logging.info(f"Writing changes for batch {i // batch_size + 1} to {CHANGES_JSON_FILE}")
-            async with aiofiles.open(CHANGES_JSON_FILE, 'w') as f:
-                await f.write(json.dumps(changes_data, indent=4))
-            logging.info(f"Changes for batch {i // batch_size + 1} have been logged in {CHANGES_JSON_FILE}")
 
         await browser.close()
 
