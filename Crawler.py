@@ -31,7 +31,7 @@ CHANGES_JSON_FILE = 'changes.json'
 changes_data = []
 
 # Semaphore to limit the number of concurrent tasks
-semaphore = asyncio.Semaphore(2)  # Adjust as needed
+semaphore = asyncio.Semaphore(5)  # Adjust as needed
 
 def sanitize_filename(filename):
     """Sanitizes a string to be a valid filename by removing or replacing invalid characters."""
@@ -163,7 +163,6 @@ async def monitor_website(browser, url: str):
             error_logger.error(f"Error during website monitoring: {e}")
         finally:
             await page.close()
-
 async def main():
     """Main function to handle multiple website monitoring concurrently."""
     async with async_playwright() as p:
@@ -173,19 +172,20 @@ async def main():
             websites = [line.strip() for line in file.readlines()]
 
         # Processing websites in batches
-        batch_size = 2  # Adjust as needed
+        batch_size = 5  # Adjust as needed
         for i in range(0, len(websites), batch_size):
             batch = websites[i:i + batch_size]
             tasks = [monitor_website(browser, website) for website in batch]
             await asyncio.gather(*tasks)
 
-        await browser.close()
+            # After each batch, write the collected changes to the JSON file
+            logging.info(f"Writing changes for batch {i // batch_size + 1} to {CHANGES_JSON_FILE}")
+            async with aiofiles.open(CHANGES_JSON_FILE, 'w') as f:
+                await f.write(json.dumps(changes_data, indent=4))
+            logging.info(f"Changes for batch {i // batch_size + 1} have been logged in {CHANGES_JSON_FILE}")
 
-    # Write all collected changes to the JSON file
-    logging.info(f"Writing all changes to {CHANGES_JSON_FILE}")
-    async with aiofiles.open(CHANGES_JSON_FILE, 'w') as f:
-        await f.write(json.dumps(changes_data, indent=4))
-    logging.info(f"All changes have been logged in {CHANGES_JSON_FILE}")
+        await browser.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
+
