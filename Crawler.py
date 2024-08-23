@@ -31,7 +31,7 @@ CHANGES_JSON_FILE = 'changes.json'
 changes_data = []
 
 # Semaphore to limit the number of concurrent tasks
-semaphore = asyncio.Semaphore(5)  # Adjust as needed
+semaphore = asyncio.Semaphore(2)  # Adjust as needed
 
 def sanitize_filename(filename):
     """Sanitizes a string to be a valid filename by removing or replacing invalid characters."""
@@ -70,6 +70,30 @@ async def monitor_changes(page, click_description):
         error_logger.error(f"Error while monitoring changes: {e}")
     
     return changes
+
+async def capture_initial_state(page):
+    """Captures and logs the initial state of the webpage."""
+    initial_state = {}
+    try:
+        html_content = await page.content()
+        js_content = await page.evaluate('Array.from(document.scripts).map(s => s.outerHTML).join("\\n")')
+        css_content = await page.evaluate('Array.from(document.styleSheets).map(s => s.ownerNode.outerHTML).join("\\n")')
+        current_url = page.url
+
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        initial_state = {
+            "timestamp": now,
+            "initial_load": True,
+            "url": current_url,
+            "html_snippet": html_content[:200],
+            "js_snippet": js_content[:200],
+            "css_snippet": css_content[:200]
+        }
+        logging.info("Initial state captured and logged.")
+    except Exception as e:
+        error_logger.error(f"Error while capturing initial state: {e}")
+    
+    return initial_state
 
 async def handle_redirection_or_new_tab(page, element_text, screenshots_dir):
     """Handles possible redirection or new tabs after a click."""
@@ -157,12 +181,17 @@ async def monitor_website(browser, url: str):
             await page.goto(url, timeout=30000)
             logging.info(f"Successfully navigated to {url}")
 
+            # Capture and log the initial state
+            initial_state = await capture_initial_state(page)
+            changes_data.append(initial_state)
+
             await simulate_clicks(page, screenshots_dir)
 
         except Exception as e:
             error_logger.error(f"Error during website monitoring: {e}")
         finally:
             await page.close()
+
 async def main():
     """Main function to handle multiple website monitoring concurrently."""
     async with async_playwright() as p:
@@ -172,7 +201,7 @@ async def main():
             websites = [line.strip() for line in file.readlines()]
 
         # Processing websites in batches
-        batch_size = 5  # Adjust as needed
+        batch_size = 2  # Adjust as needed
         for i in range(0, len(websites), batch_size):
             batch = websites[i:i + batch_size]
             tasks = [monitor_website(browser, website) for website in batch]
@@ -188,4 +217,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
