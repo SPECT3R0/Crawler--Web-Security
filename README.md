@@ -1,56 +1,65 @@
 The project is part of SE Ad Blocker
 
----
+# Web Crawler for Website Monitoring
 
-# Web Crawler and Monitoring Tool
-
-## Overview
-
-This Python-based tool leverages Playwright for dynamic web scraping and monitoring. It is designed to automate interactions with web pages, simulate random clicks, and capture changes that occur as a result of those interactions. The tool supports multi-threaded execution to handle multiple URLs simultaneously, optimizing performance and reducing processing time.
+Welcome to the **Web Crawler for Website Monitoring**! This tool is designed to simulate random user interactions with a website, detect changes in the HTML, CSS, and JavaScript, and capture screenshots of the site before and after these interactions. The primary purpose of this tool is to monitor websites for potential social engineering ads or other malicious activities by identifying dynamic changes in content and structure.
 
 ## Features
 
-- **Dynamic Web Interaction**: Simulates random clicks on web pages, with the number of clicks randomly determined between 5 and 10 for each URL.
-- **Change Detection**: Monitors and logs changes in HTML, JavaScript, and CSS after each click, capturing content snippets and taking screenshots.
-- **Redirection Handling**: Detects and handles both new tabs and redirections, taking appropriate screenshots and logging changes.
-- **Multi-Threading Support**: Utilizes Python's `concurrent.futures` to run multiple instances concurrently, making it suitable for large-scale monitoring tasks.
-- **Screenshot Management**: Creates separate folders for each URL to store screenshots, organized by timestamp.
-- **Error Handling**: Includes robust error handling and logging to capture and report any issues encountered during execution.
-
-## How It Works
-
-1. **Setup**: Ensure Playwright is installed and the necessary browser binaries are available.
-2. **Configuration**: Modify the `websites.txt` file to include the list of URLs you wish to monitor.
-3. **Execution**: Run the script. It will navigate to each URL, simulate random clicks, and monitor changes dynamically.
-4. **Results**: Changes are logged in a `changes.json` file, and screenshots are saved in separate folders for each URL.
+- **Simulate Random Clicks**: Randomly clicks on elements such as links, buttons, and inputs to mimic user behavior.
+- **Monitor Changes**: Detects changes in HTML, CSS, and JavaScript after each interaction.
+- **Redirection and New Tab Handling**: Handles scenarios where a click leads to a redirection or opens a new tab.
+- **Screenshots**: Captures screenshots of the webpage before and after each interaction for visual reference.
+- **Logs Changes**: Records detected changes in a structured JSON format.
+- **Concurrent Task Execution**: Uses asyncio to handle multiple websites concurrently.
 
 ## Installation
 
-To get started, clone this repository and install the required dependencies:
+### Prerequisites
 
-```bash
-git clone https://github.com/tkflash/Crawler--Web-Security.git
-cd Crawler--Web-Security
-pip install -r requirements.txt
-```
+- Python 3.7+
+- Playwright
+
+### Setup
+
+1. **Clone the repository**:
+    ```bash
+    git clone https://github.com/tkflash/Crawler--Web-Security.git
+    cd Crawler--Web-Security
+    ```
+
+2. **Install the required dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3. **Install Playwright browsers**:
+    ```bash
+    playwright install
+    ```
 
 ## Usage
 
-1. **Update the `websites.txt` file** with the URLs you want to monitor.
+1. **Prepare a list of websites**: Create a file named `websites.txt` in the same directory as the script, containing the URLs of websites you want to monitor, one per line.
+
 2. **Run the script**:
+    ```bash
+    python Crawler.py
+    ```
 
-```bash
-python Crawler.py
-```
+3. **View Results**: The crawler will create a directory named `screenshots` in the project root, where it stores screenshots and JSON files for each monitored website.
 
-3. **Review the results** in the `changes.json` file and the screenshot directories.
+### Example
 
-## Requirements
+To see the script in action, check out the [Crawler.py](https://github.com/tkflash/Crawler--Web-Security/blob/main/Crawler.py) file on GitHub.
 
-- Python 3.8 or later
-- Playwright
-- Asyncio
-- Logging
+## Configuration
+
+You can adjust the script's configuration to change the number of concurrent tasks or the timeout periods. For instance, the semaphore limit is currently set to `2`, which means only two websites will be processed concurrently. Adjust the `semaphore` value in the script to change this behavior.
+
+```python
+semaphore = asyncio.Semaphore(2)  # Adjust as needed
+
 
 ## License
 
