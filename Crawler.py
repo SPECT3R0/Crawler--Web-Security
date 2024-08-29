@@ -3,6 +3,7 @@ import logging
 import os
 import json
 import random
+import time
 import re
 from datetime import datetime
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
@@ -13,12 +14,17 @@ print("Welcome to Web Crawler!")
 print("By: tkFlash!")
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-console = logging.StreamHandler()
-console.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Stream handler for console output
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-console.setFormatter(formatter)
-logging.getLogger().addHandler(console)
+console_handler.setFormatter(formatter)
+
+# Adding the console handler to the logger
+logger.addHandler(console_handler)
 
 error_logger = logging.getLogger('error_logger')
 
@@ -40,7 +46,7 @@ async def take_screenshot(page, screenshot_path: str):
     """Takes a screenshot of the current page with a longer timeout."""
     try:
         await page.screenshot(path=screenshot_path, full_page=True, timeout=60000)
-        logging.info(f"Screenshot saved: {screenshot_path}")
+        logger.info(f"Screenshot saved: {screenshot_path}")
     except PlaywrightTimeoutError:
         error_logger.error("Failed to take screenshot: Timeout exceeded while waiting for fonts or other resources to load.")
     except Exception as e:
@@ -74,7 +80,8 @@ async def handle_redirection_or_new_tab(page, element_text, screenshots_dir, cha
     """Handles possible redirection or new tabs after a click."""
     initial_url = page.url
     try:
-        await page.wait_for_timeout(5000)
+        # Increase the timeout for waiting on redirections or new tabs
+        await page.wait_for_timeout(10000)  # Wait for up to 10 seconds
 
         pages = [page]
         for context_page in page.context.pages:
@@ -138,10 +145,63 @@ async def simulate_clicks(page, screenshots_dir, changes_list):
                 screenshot_path = f"{screenshots_dir}/{timestamp}_click_{i+1}.png"
                 await take_screenshot(page, screenshot_path)
 
+                # Increase the wait time after each click to match the extended redirection handling
+                await page.wait_for_timeout(5000)  # Wait for 5 seconds after each click
+
+    except Exception as e:
+        error_logger.error(f"Error during click simulation: {e}")
+
+
+async def simulate_clicks(page, screenshots_dir, changes_list):
+    """Simulates random clicks on a webpage and monitors for changes."""
+    num_clicks = random.randint(5, 10)
+    logging.info(f"Will attempt to perform up to {num_clicks} clicks on this webpage.")
+
+    start_time = time.time()  # Track the start time
+    click_duration = 120 # Time in seconds for which clicks will be performed
+    total_wait_duration = 120  # Total duration in seconds to wait after clicks
+
+    try:
+        for i in range(num_clicks):
+            if time.time() - start_time > click_duration:
+                break  # Stop clicking if the time exceeds the allowed click duration
+
+            clickable_elements = await page.query_selector_all('a, button, input[type="button"], input[type="submit"], [onclick]')
+            
+            logging.info(f"Found {len(clickable_elements)} clickable elements on the page.")
+
+            if not clickable_elements:
+                logging.info("No clickable elements found on this page. Ending click simulation.")
+                break
+
+            element = random.choice(clickable_elements)
+
+            if await element.is_visible() and await element.is_enabled():
+                element_text = await page.evaluate('(element) => element.innerText || element.outerHTML', element)
+                logging.info(f"Clicking on element: {element_text} (click {i + 1}/{num_clicks})")
+                await element.click()
+
+                await handle_redirection_or_new_tab(page, element_text, screenshots_dir, changes_list)
+
+                click_description = f"Clicked on element: {element_text}"
+                changes = await monitor_changes(page, click_description)
+                changes_list.append(changes)
+
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                screenshot_path = f"{screenshots_dir}/{timestamp}_click_{i+1}.png"
+                await take_screenshot(page, screenshot_path)
+
                 await page.wait_for_timeout(2000)
 
             else:
                 logging.info(f"Element not visible or not enabled: {await page.evaluate('(element) => element.outerHTML', element)}")
+
+        # Wait for the rest of the total wait duration if clicks were done in less time
+        elapsed_time = time.time() - start_time
+        remaining_time = total_wait_duration - elapsed_time
+        if remaining_time > 0:
+            logging.info(f"Waiting for the remaining {remaining_time:.2f} seconds.")
+            await page.wait_for_timeout(int(remaining_time * 1000))  # Convert seconds to milliseconds
 
     except Exception as e:
         error_logger.error(f"Error during click simulation: {e}")
@@ -191,6 +251,10 @@ async def monitor_website(browser, url: str):
             changes_list.append(initial_state)  # Save initial state
 
             await simulate_clicks(page, screenshots_dir, changes_list)
+
+            # Log monitored URL
+            async with aiofiles.open('monitored_urls.txt', 'a') as f:
+                await f.write(url + '\n')
 
         except Exception as e:
             error_logger.error(f"Error during website monitoring: {e}")
