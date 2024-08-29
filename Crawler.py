@@ -26,8 +26,11 @@ error_logger = logging.getLogger('error_logger')
 BASE_SCREENSHOTS_DIR = 'screenshots'
 os.makedirs(BASE_SCREENSHOTS_DIR, exist_ok=True)
 
+# File to log inaccessible URLs
+INACCESSIBLE_URLS_FILE = 'inaccessible_urls.txt'
+
 # Semaphore to limit the number of concurrent tasks
-semaphore = asyncio.Semaphore(5)  # Adjust as needed
+semaphore = asyncio.Semaphore(2)  # Adjust as needed
 
 def sanitize_filename(filename):
     """Sanitizes a string to be a valid filename by removing or replacing invalid characters."""
@@ -106,21 +109,23 @@ async def handle_redirection_or_new_tab(page, element_text, screenshots_dir, cha
 async def simulate_clicks(page, screenshots_dir, changes_list):
     """Simulates random clicks on a webpage and monitors for changes."""
     num_clicks = random.randint(5, 10)
-    logging.info(f"Will perform {num_clicks} clicks on this webpage.")
+    logging.info(f"Will attempt to perform up to {num_clicks} clicks on this webpage.")
 
     try:
         for i in range(num_clicks):
             clickable_elements = await page.query_selector_all('a, button, input[type="button"], input[type="submit"], [onclick]')
             
+            logging.info(f"Found {len(clickable_elements)} clickable elements on the page.")
+
             if not clickable_elements:
-                logging.info("No clickable elements found on this page.")
+                logging.info("No clickable elements found on this page. Ending click simulation.")
                 return
 
             element = random.choice(clickable_elements)
 
             if await element.is_visible() and await element.is_enabled():
                 element_text = await page.evaluate('(element) => element.innerText || element.outerHTML', element)
-                logging.info(f"Clicking on element: {element_text}")
+                logging.info(f"Clicking on element: {element_text} (click {i + 1}/{num_clicks})")
                 await element.click()
 
                 await handle_redirection_or_new_tab(page, element_text, screenshots_dir, changes_list)
@@ -135,25 +140,45 @@ async def simulate_clicks(page, screenshots_dir, changes_list):
 
                 await page.wait_for_timeout(2000)
 
+            else:
+                logging.info(f"Element not visible or not enabled: {await page.evaluate('(element) => element.outerHTML', element)}")
+
     except Exception as e:
         error_logger.error(f"Error during click simulation: {e}")
+
+async def is_site_accessible(page, url):
+    """Checks if a site is accessible by navigating to it."""
+    try:
+        await page.goto(url, timeout=30000)
+        return True
+    except PlaywrightTimeoutError:
+        logging.warning(f"Timeout while trying to access {url}. Site may not be accessible.")
+        return False
+    except Exception as e:
+        logging.warning(f"Error while trying to access {url}: {e}")
+        return False
 
 async def monitor_website(browser, url: str):
     """Monitors a single website by navigating to it and simulating clicks."""
     async with semaphore:
         page = await browser.new_page()
 
-        # Sanitize the URL to create a valid directory name
-        sanitized_url = sanitize_filename(url)
-        screenshots_dir = os.path.join(BASE_SCREENSHOTS_DIR, sanitized_url)
-        os.makedirs(screenshots_dir, exist_ok=True)
-
         changes_list = []  # Store changes for this URL
 
         try:
-            logging.info(f"Navigating to {url}...")
-            await page.goto(url, timeout=30000)
+            logging.info(f"Checking accessibility of {url}...")
+            if not await is_site_accessible(page, url):
+                logging.info(f"Site {url} is not accessible. Logging to {INACCESSIBLE_URLS_FILE}.")
+                async with aiofiles.open(INACCESSIBLE_URLS_FILE, 'a') as f:
+                    await f.write(url + '\n')
+                return
+
             logging.info(f"Successfully navigated to {url}")
+
+            # Only create directories and start monitoring if the site is accessible
+            sanitized_url = sanitize_filename(url)
+            screenshots_dir = os.path.join(BASE_SCREENSHOTS_DIR, sanitized_url)
+            os.makedirs(screenshots_dir, exist_ok=True)
 
             # Capture initial state
             initial_state = {
@@ -173,26 +198,24 @@ async def monitor_website(browser, url: str):
             await page.close()
 
             # Save the changes to a JSON file specific to this URL
-            changes_json_path = os.path.join(screenshots_dir, 'changes.json')
-            logging.info(f"Writing changes for {url} to {changes_json_path}")
-            async with aiofiles.open(changes_json_path, 'w') as f:
-                await f.write(json.dumps(changes_list, indent=4))
-            logging.info(f"Changes for {url} have been logged.")
+            if changes_list:  # Only save if there are changes recorded
+                changes_json_path = os.path.join(screenshots_dir, 'changes.json')
+                logging.info(f"Writing changes for {url} to {changes_json_path}")
+                async with aiofiles.open(changes_json_path, 'w') as f:
+                    await f.write(json.dumps(changes_list, indent=4))
+                logging.info(f"Changes saved for {url}")
+
 
 async def main():
-    """Main function to handle multiple website monitoring concurrently."""
+    """Main function to monitor multiple websites."""
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, slow_mo=50, timeout=30000)
+        browser = await p.chromium.launch(headless=True)
 
-        with open('websites.txt', 'r') as file:
-            websites = [line.strip() for line in file.readlines()]
+        async with aiofiles.open('websites.txt', 'r') as f:
+            urls = [line.strip() for line in await f.readlines() if line.strip()]
 
-        # Processing websites in batches
-        batch_size = 10  # Adjust as needed
-        for i in range(0, len(websites), batch_size):
-            batch = websites[i:i + batch_size]
-            tasks = [monitor_website(browser, website) for website in batch]
-            await asyncio.gather(*tasks)
+        monitor_tasks = [monitor_website(browser, url) for url in urls]
+        await asyncio.gather(*monitor_tasks)
 
         await browser.close()
 
