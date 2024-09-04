@@ -26,7 +26,12 @@ console_handler.setFormatter(formatter)
 # Adding the console handler to the logger
 logger.addHandler(console_handler)
 
+# Error logger for file output
 error_logger = logging.getLogger('error_logger')
+file_handler = logging.FileHandler('errors.log')
+file_handler.setLevel(logging.ERROR)
+file_handler.setFormatter(formatter)
+error_logger.addHandler(file_handler)
 
 # Base directory for screenshots
 BASE_SCREENSHOTS_DIR = 'screenshots'
@@ -34,9 +39,12 @@ os.makedirs(BASE_SCREENSHOTS_DIR, exist_ok=True)
 
 # File to log inaccessible URLs
 INACCESSIBLE_URLS_FILE = 'inaccessible_urls.txt'
+# File to log monitored URLs
+MONITORED_URLS_FILE = 'monitored_websites.txt'
 
 # Semaphore to limit the number of concurrent tasks
-semaphore = asyncio.Semaphore(2)  # Adjust as needed
+SEMAPHORE_LIMIT = 10  # Adjust based on system resources
+semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
 
 def sanitize_filename(filename):
     """Sanitizes a string to be a valid filename by removing or replacing invalid characters."""
@@ -118,47 +126,8 @@ async def simulate_clicks(page, screenshots_dir, changes_list):
     num_clicks = random.randint(5, 10)
     logging.info(f"Will attempt to perform up to {num_clicks} clicks on this webpage.")
 
-    try:
-        for i in range(num_clicks):
-            clickable_elements = await page.query_selector_all('a, button, input[type="button"], input[type="submit"], [onclick]')
-            
-            logging.info(f"Found {len(clickable_elements)} clickable elements on the page.")
-
-            if not clickable_elements:
-                logging.info("No clickable elements found on this page. Ending click simulation.")
-                return
-
-            element = random.choice(clickable_elements)
-
-            if await element.is_visible() and await element.is_enabled():
-                element_text = await page.evaluate('(element) => element.innerText || element.outerHTML', element)
-                logging.info(f"Clicking on element: {element_text} (click {i + 1}/{num_clicks})")
-                await element.click()
-
-                await handle_redirection_or_new_tab(page, element_text, screenshots_dir, changes_list)
-
-                click_description = f"Clicked on element: {element_text}"
-                changes = await monitor_changes(page, click_description)
-                changes_list.append(changes)
-
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                screenshot_path = f"{screenshots_dir}/{timestamp}_click_{i+1}.png"
-                await take_screenshot(page, screenshot_path)
-
-                # Increase the wait time after each click to match the extended redirection handling
-                await page.wait_for_timeout(5000)  # Wait for 5 seconds after each click
-
-    except Exception as e:
-        error_logger.error(f"Error during click simulation: {e}")
-
-
-async def simulate_clicks(page, screenshots_dir, changes_list):
-    """Simulates random clicks on a webpage and monitors for changes."""
-    num_clicks = random.randint(5, 10)
-    logging.info(f"Will attempt to perform up to {num_clicks} clicks on this webpage.")
-
     start_time = time.time()  # Track the start time
-    click_duration = 120 # Time in seconds for which clicks will be performed
+    click_duration = 120  # Time in seconds for which clicks will be performed
     total_wait_duration = 120  # Total duration in seconds to wait after clicks
 
     try:
@@ -191,7 +160,7 @@ async def simulate_clicks(page, screenshots_dir, changes_list):
                 screenshot_path = f"{screenshots_dir}/{timestamp}_click_{i+1}.png"
                 await take_screenshot(page, screenshot_path)
 
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(2000)  # Reduced wait time to 2 seconds
 
             else:
                 logging.info(f"Element not visible or not enabled: {await page.evaluate('(element) => element.outerHTML', element)}")
@@ -226,6 +195,11 @@ async def monitor_website(browser, url: str):
         changes_list = []  # Store changes for this URL
 
         try:
+            # Check if the URL has already been monitored
+            if await is_already_monitored(url):
+                logging.info(f"URL {url} has already been monitored. Skipping.")
+                return
+
             logging.info(f"Checking accessibility of {url}...")
             if not await is_site_accessible(page, url):
                 logging.info(f"Site {url} is not accessible. Logging to {INACCESSIBLE_URLS_FILE}.")
@@ -252,36 +226,63 @@ async def monitor_website(browser, url: str):
 
             await simulate_clicks(page, screenshots_dir, changes_list)
 
-            # Log monitored URL
-            async with aiofiles.open('monitored_urls.txt', 'a') as f:
-                await f.write(url + '\n')
+            # Save the changes to a JSON file
+            json_filename = os.path.join(screenshots_dir, "changes.json")
+            async with aiofiles.open(json_filename, 'w') as json_file:
+                await json_file.write(json.dumps(changes_list, indent=4))
+
+            logging.info(f"Finished monitoring {url}. Results saved to {screenshots_dir}")
+
+            # Log the monitored URL
+            await log_monitored_url(url)
 
         except Exception as e:
-            error_logger.error(f"Error during website monitoring: {e}")
+            error_logger.error(f"Error while monitoring {url}: {e}")
+
         finally:
             await page.close()
 
-            # Save the changes to a JSON file specific to this URL
-            if changes_list:  # Only save if there are changes recorded
-                changes_json_path = os.path.join(screenshots_dir, 'changes.json')
-                logging.info(f"Writing changes for {url} to {changes_json_path}")
-                async with aiofiles.open(changes_json_path, 'w') as f:
-                    await f.write(json.dumps(changes_list, indent=4))
-                logging.info(f"Changes saved for {url}")
+async def is_already_monitored(url):
+    """Checks if the URL has already been monitored by checking the monitored_websites.txt file."""
+    try:
+        async with aiofiles.open(MONITORED_URLS_FILE, 'r') as file:
+            async for line in file:
+                if url in line:
+                    return True
+    except FileNotFoundError:
+        # If the file does not exist, assume no URLs have been monitored yet
+        return False
+    return False
 
+async def log_monitored_url(url):
+    """Logs the URL to monitored_websites.txt after successful monitoring."""
+    async with aiofiles.open(MONITORED_URLS_FILE, 'a') as file:
+        await file.write(url + '\n')
 
-async def main():
-    """Main function to monitor multiple websites."""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+async def monitor_websites(urls):
+    """Monitors multiple websites concurrently."""
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        try:
+            tasks = [monitor_website(browser, url) for url in urls]
+            await asyncio.gather(*tasks)
+        finally:
+            await browser.close()
 
-        async with aiofiles.open('websites.txt', 'r') as f:
-            urls = [line.strip() for line in await f.readlines() if line.strip()]
-
-        monitor_tasks = [monitor_website(browser, url) for url in urls]
-        await asyncio.gather(*monitor_tasks)
-
-        await browser.close()
+def load_urls(filename):
+    """Loads URLs from a text file."""
+    with open(filename, 'r') as file:
+        urls = [line.strip() for line in file.readlines()]
+    return urls
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    start_time = time.time()
+
+    # Load the list of URLs
+    urls = load_urls('websites.txt')
+    random.shuffle(urls)
+
+    asyncio.run(monitor_websites(urls))
+
+    elapsed_time = time.time() - start_time
+    logging.info(f"Completed monitoring of all websites. Total time taken: {elapsed_time:.2f} seconds.")
